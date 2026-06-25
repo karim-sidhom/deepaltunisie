@@ -483,6 +483,7 @@
 
   <div id="stationSection" style="display: none;">
     <div class="sec-head" style="color: var(--gold-shine); text-shadow: 0 0 12px rgba(255,215,0,0.8); border-bottom: 2px solid rgba(255,215,0,0.5);">🔌 محطات الشحن</div>
+    <div id="stationMapsActions" style="margin-bottom:14px;"></div>
     <div id="atmList" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px;"></div>
     <div class="stats-bar" id="statsBar" style="display: none; gap: 8px; margin-bottom: 20px;">
       <div class="stat-card" style="box-shadow: 0 0 25px rgba(255,215,0,0.15), inset 0 0 10px rgba(255,215,0,0.05);"><span class="stat-num" id="statCount" style="color: var(--gold-shine); text-shadow: 0 0 8px rgba(255,215,0,0.7);">0</span><span class="stat-label">محطة</span></div>
@@ -561,6 +562,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 let userPos = null, routeA = null, routeB = null, mode = 'auto';
+const ELECTROMAPS_URL = 'https://www.electromaps.com/fr/stations-de-recharge';
 
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -589,21 +591,53 @@ function setMode(m){
   if(m==='auto') startAutoSearch();
 }
 
-/* ---------- GPS + recherche de bornes de recharge ---------- */
+/* ---------- Boutons cartes : TOUJOURS disponibles (Google Maps géolocalise lui-même) ---------- */
+function gmapsChargersUrl(pos){
+  if(pos && pos.lat != null){
+    return 'https://www.google.com/maps/search/' + encodeURIComponent('borne de recharge électrique') + '/@' + pos.lat + ',' + pos.lng + ',13z';
+  }
+  return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent('borne de recharge électrique');
+}
+
+function setStationHint(msg){
+  const cont = document.getElementById('atmList');
+  if(cont) cont.innerHTML = '<div class="p-state">' + msg + '</div>';
+}
+
+function renderMapsActions(pos){
+  const sec = document.getElementById('stationSection');
+  if(sec) sec.style.display = 'block';
+  const host = document.getElementById('stationMapsActions');
+  if(!host) return;
+  const g = gmapsChargersUrl(pos);
+  host.innerHTML =
+    '<a href="' + g + '" target="_blank" rel="noopener" style="display:flex; align-items:center; justify-content:center; gap:8px; width:100%; padding:14px; border-radius:12px; margin-bottom:10px; text-decoration:none; ' + "font-family:'Tajawal',sans-serif; " + 'font-size:14px; font-weight:900; color:#020b2e; background:linear-gradient(90deg,#b8730a,#ffd700,#ffe566,#ffd700,#b8730a); border:2px solid var(--gold-bright); box-shadow:0 0 30px rgba(255,215,0,0.45), inset 0 0 15px rgba(255,255,255,0.25); text-shadow:0 0 6px rgba(255,255,255,0.4);">🗺️ ابحث عن البنشات في خرائط Google</a>' +
+    '<a href="' + ELECTROMAPS_URL + '" target="_blank" rel="noopener" style="display:flex; align-items:center; justify-content:center; gap:8px; width:100%; padding:11px; border-radius:12px; text-decoration:none; ' + "font-family:'Tajawal',sans-serif; " + 'font-size:13px; font-weight:700; color:var(--gold-bright); background:linear-gradient(135deg, rgba(255,215,0,0.12), rgba(2,9,40,0.9)); border:1px solid rgba(255,215,0,0.4); box-shadow:0 0 15px rgba(255,215,0,0.1);">🌍 عرض الخريطة على Electromaps</a>';
+}
+
+/* ---------- GPS + recherche de bornes ---------- */
 function startAutoSearch(){
   const status = document.getElementById('gpsText');
+  renderMapsActions(null);
+  setStationHint('⏳ جاري تحديد موقعك والبحث عن البنشات القريبة...');
   status.textContent = '⏳ جاري تحديد الموقع...';
-  if(!navigator.geolocation){ status.textContent = '❌ GPS غير مدعوم'; return; }
+  if(!navigator.geolocation){
+    status.textContent = '❌ GPS غير مدعوم';
+    setStationHint('📍 الـ GPS غير مدعوم — استعمل زر « خرائط Google » بالأعلى.');
+    return;
+  }
   let done = false;
   const watchId = navigator.geolocation.watchPosition(p => {
     if(done) return; done = true;
     try { navigator.geolocation.clearWatch(watchId); } catch(e){}
     userPos = { lat: p.coords.latitude, lng: p.coords.longitude };
     status.textContent = '✅ ' + userPos.lat.toFixed(3) + ', ' + userPos.lng.toFixed(3) + ' — جاري البحث...';
+    renderMapsActions(userPos);
     searchStations(userPos);
   }, () => {
-    if(done) return;
-    status.textContent = '❌ تعذّر تحديد الموقع — فعّل الـ GPS وأعد المحاولة';
+    if(done) return; done = true;
+    status.textContent = '❌ تعذّر تحديد الموقع — فعّل الـ GPS';
+    setStationHint('📍 تعذّر تحديد موقعك — استعمل زر « خرائط Google » بالأعلى للعثور على البنشات.');
   }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
 }
 
@@ -631,16 +665,18 @@ async function overpassChargers(pos, radius){
 
 async function searchStations(pos){
   const status = document.getElementById('gpsText');
-  const radii = [5000, 15000, 30000, 60000];
+  const radii = [10000, 30000, 60000];
+  let anyError = false;
   for(const r of radii){
-    status.textContent = '🔌 البحث عن المحطات ضمن ' + (r/1000) + ' كم...';
+    status.textContent = '🔌 البحث ضمن ' + (r/1000) + ' كم...';
     let results = null;
-    try { results = await overpassChargers(pos, r); } catch(e){ results = null; }
+    try { results = await overpassChargers(pos, r); } catch(e){ results = null; anyError = true; }
     if(results && results.length > 0){ renderStations(results, pos, r); return; }
   }
-  document.getElementById('stationSection').style.display = 'block';
   document.getElementById('statsBar').style.display = 'none';
-  document.getElementById('atmList').innerHTML = '<div class="p-state">لا توجد محطات شحن قريبة ضمن 60 كم</div>';
+  setStationHint(anyError
+    ? '⚠️ تعذّر جلب البيانات من OpenStreetMap — استعمل زر « خرائط Google » بالأعلى.'
+    : 'ℹ️ لا توجد بنشات مسجّلة هنا في OpenStreetMap. استعمل زر « خرائط Google » بالأعلى (تغطية أفضل في تونس).');
   status.textContent = '✅ ' + pos.lat.toFixed(3) + ', ' + pos.lng.toFixed(3);
 }
 
